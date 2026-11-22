@@ -3,6 +3,7 @@ package com.vidload.app
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
@@ -36,7 +37,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(vm)
+                    val cu = vm.cookieUrl
+                    BackHandler(enabled = cu != null) { vm.cookieUrl = null }
+                    if (cu != null) {
+                        CookieScreen(
+                            startUrl = cu,
+                            onSave = { base, cookies -> vm.saveCookies(base, cookies) },
+                            onCancel = { vm.cookieUrl = null }
+                        )
+                    } else {
+                        MainScreen(vm)
+                    }
                 }
             }
         }
@@ -103,6 +114,12 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.status.isNotEmpty()) {
             Text(vm.status, style = MaterialTheme.typography.bodyMedium)
         }
+
+        OutlinedButton(
+            onClick = { vm.openCookie() },
+            enabled = !vm.busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Lấy cookie (Douyin, Weibo, Facebook... khi bị chặn)") }
 
         OutlinedButton(
             onClick = { vm.updateEngine() },

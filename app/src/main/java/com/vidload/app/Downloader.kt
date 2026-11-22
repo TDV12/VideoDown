@@ -27,6 +27,7 @@ object Downloader {
             req.addOption("-o", "${tmp.absolutePath}/%(title).80s.%(ext)s")
             req.addOption("--no-playlist")
             req.addOption("--no-mtime")
+            CookieStore.applyTo(ctx, url, req)
             if (audioOnly) {
                 req.addOption("-f", "ba/b")
                 req.addOption("-x")
