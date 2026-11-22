@@ -66,14 +66,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 status = "Xong! Đã lưu tại: $it"
             }.onFailure {
                 val msg = it.message ?: ""
-                val hint = if (msg.contains("cookie", ignoreCase = true) ||
-                    msg.contains("login", ignoreCase = true) ||
-                    msg.contains("403")
-                ) {
-                    "Trang này cần cookie: bấm \"Lấy cookie\" bên dưới, đợi trang tải xong, " +
-                        "bấm \"Lưu cookie\" rồi tải lại."
-                } else {
-                    "Thử bấm \"Cập nhật engine\" rồi tải lại."
+                val hint = when {
+                    msg.contains("Unsupported URL", ignoreCase = true) ->
+                        "Link này không phải video được hỗ trợ " +
+                            "(có thể là bài đăng ảnh hoặc link sai)."
+                    msg.contains("cookie", ignoreCase = true) ||
+                        msg.contains("login", ignoreCase = true) ||
+                        msg.contains("403") ->
+                        "Trang này cần cookie: bấm \"Lấy cookie\" bên dưới, đợi trang tải xong, " +
+                            "bấm \"Lưu cookie\" rồi tải lại."
+                    else -> "Thử bấm \"Cập nhật engine\" rồi tải lại."
                 }
                 status = "Lỗi: $msg\n\n$hint"
             }
