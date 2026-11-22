@@ -17,6 +17,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var status by mutableStateOf("")
     var busy by mutableStateOf(false)
     var cookieUrl by mutableStateOf<String?>(null)
+    var captureUrl by mutableStateOf<String?>(null)
 
     /** Lấy link từ đoạn text chia sẻ (TikTok/Facebook hay kèm chữ phía trước). */
     fun extractUrl(text: String): String? =
@@ -45,6 +46,48 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Douyin: mở trình duyệt trong app để bắt link video thật rồi tải. */
+    fun openCapture() {
+        if (busy) return
+        val url = extractUrl(link)
+        if (url == null || !DouyinDownloader.isDouyin(url)) {
+            status = "Chức năng này chỉ dành cho link Douyin. Hãy dán link Douyin trước."
+            return
+        }
+        busy = true
+        status = "Đang tìm video..."
+        viewModelScope.launch {
+            runCatching { DouyinDownloader.videoPageUrl(url) }
+                .onSuccess {
+                    status = ""
+                    captureUrl = it
+                }
+                .onFailure { status = "Lỗi: ${it.message}" }
+            busy = false
+        }
+    }
+
+    fun onCaptured(videoUrl: String, cookies: String) {
+        captureUrl = null
+        busy = true
+        progress = 0f
+        status = "Đã bắt được link video, đang tải..."
+        viewModelScope.launch {
+            runCatching {
+                DouyinDownloader.downloadDirect(app, videoUrl, cookies) { p, line ->
+                    progress = p.coerceIn(0f, 100f) / 100f
+                    status = line
+                }
+            }.onSuccess {
+                progress = 1f
+                status = "Xong! Đã lưu tại: $it"
+            }.onFailure {
+                status = "Lỗi: ${it.message}"
+            }
+            busy = false
+        }
+    }
+
     fun startDownload() {
         if (busy) return
         val url = extractUrl(link)
@@ -67,6 +110,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             }.onFailure {
                 val msg = it.message ?: ""
                 val hint = when {
+                    msg.contains("Cách riêng cho Douyin") ->
+                        "Thử bấm \"Tải Douyin qua trình duyệt\" bên dưới."
                     msg.contains("Unsupported URL", ignoreCase = true) ->
                         "Link này không phải video được hỗ trợ " +
                             "(có thể là bài đăng ảnh hoặc link sai)."

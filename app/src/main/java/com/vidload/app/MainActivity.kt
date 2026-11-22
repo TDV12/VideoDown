@@ -38,8 +38,18 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val cu = vm.cookieUrl
-                    BackHandler(enabled = cu != null) { vm.cookieUrl = null }
-                    if (cu != null) {
+                    val cap = vm.captureUrl
+                    BackHandler(enabled = cu != null || cap != null) {
+                        vm.cookieUrl = null
+                        vm.captureUrl = null
+                    }
+                    if (cap != null) {
+                        CaptureScreen(
+                            startUrl = cap,
+                            onCaptured = { u, c -> vm.onCaptured(u, c) },
+                            onCancel = { vm.captureUrl = null }
+                        )
+                    } else if (cu != null) {
                         CookieScreen(
                             startUrl = cu,
                             onSave = { base, cookies -> vm.saveCookies(base, cookies) },
@@ -114,6 +124,12 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.status.isNotEmpty()) {
             Text(vm.status, style = MaterialTheme.typography.bodyMedium)
         }
+
+        OutlinedButton(
+            onClick = { vm.openCapture() },
+            enabled = !vm.busy,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Tải Douyin qua trình duyệt (khi cách thường lỗi)") }
 
         OutlinedButton(
             onClick = { vm.openCookie() },

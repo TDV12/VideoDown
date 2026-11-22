@@ -4,14 +4,16 @@ import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Tải Douyin trực tiếp từ trang chia sẻ (iesdouyin.com), không qua yt-dlp.
- * Hỗ trợ cả video lẫn bài đăng dạng ảnh (note/slides).
+ * Tải Douyin trực tiếp (không qua yt-dlp):
+ *  1) Đọc trang chia sẻ iesdouyin.com (video + bài đăng ảnh)
+ *  2) downloadDirect: tải từ link video do WebView bắt được (xem CaptureScreen)
  */
 object DouyinDownloader {
     private const val MOBILE_UA =
@@ -26,18 +28,68 @@ object DouyinDownloader {
         return host.endsWith("douyin.com")
     }
 
+    /** Trả về địa chỉ trang video trên web để WebView mở và bắt link video. */
+    suspend fun videoPageUrl(url: String): String = withContext(Dispatchers.IO) {
+        val (type, id) = extractIdType(url)
+            ?: extractIdType(resolveFinalUrl(url))
+            ?: error("Không nhận ra ID video trong link Douyin")
+        if (type != "video") error("Đây là bài đăng ảnh, cách này chỉ dùng cho video")
+        "https://www.douyin.com/video/$id"
+    }
+
+    /** Tải từ link video đã bắt được bằng WebView. */
+    suspend fun downloadDirect(
+        ctx: Context,
+        videoUrl: String,
+        cookies: String,
+        onProgress: (Float, String) -> Unit
+    ): String = withContext(Dispatchers.IO) {
+        val u = if (videoUrl.startsWith("//")) "https:$videoUrl" else videoUrl
+        val cookie = if (cookies.isEmpty()) null else cookies
+        val tmp = File(ctx.cacheDir, "dy/${System.currentTimeMillis()}").apply { mkdirs() }
+        try {
+            val f = File(tmp, "video.bin")
+            fetchToFile(u, f, ua = CookieStore.UA, cookie = cookie) { p ->
+                onProgress(p, "Đang tải video Douyin... ${p.toInt()}%")
+            }
+            if (f.length() < 10_000) error("File tải về quá nhỏ, có thể bị chặn")
+            Downloader.saveToGallery(ctx, f, "douyin_${System.currentTimeMillis()}.mp4")
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     suspend fun download(
         ctx: Context,
         url: String,
         onProgress: (Float, String) -> Unit
     ): String = withContext(Dispatchers.IO) {
         onProgress(0f, "Đang đọc thông tin Douyin...")
-        val (type, id) = extractIdType(url)
-            ?: extractIdType(resolveFinalUrl(url))
-            ?: error("Không nhận ra ID video trong link Douyin")
 
-        val html = fetchText("https://www.iesdouyin.com/share/$type/$id/")
-        val item = findItem(parseRouterData(html))
+        var finalUrl: String? = null
+        var idType = extractIdType(url)
+        if (idType == null) {
+            finalUrl = resolveFinalUrl(url)
+            idType = extractIdType(finalUrl)
+        }
+        val (type, id) = idType ?: error("Không nhận ra ID video trong link Douyin")
+
+        // Thử trang chia sẻ đầy đủ tham số (share_sign...) trước, rồi mới thử trang trơn
+        val candidates = mutableListOf<String>()
+        if (finalUrl != null && finalUrl.contains("iesdouyin.com")) candidates.add(finalUrl)
+        candidates.add("https://www.iesdouyin.com/share/$type/$id/")
+
+        var found: JSONObject? = null
+        val errors = mutableListOf<String>()
+        for (c in candidates) {
+            try {
+                found = findItem(parseRouterData(fetchText(c)))
+                break
+            } catch (e: Exception) {
+                errors.add(e.message ?: e.toString())
+            }
+        }
+        val item = found ?: error(errors.joinToString("\n"))
         val title = safeName(item.optString("desc"), id)
 
         val tmp = File(ctx.cacheDir, "dy/${System.currentTimeMillis()}").apply { mkdirs() }
@@ -79,8 +131,8 @@ object DouyinDownloader {
         val i = html.indexOf(marker)
         if (i < 0) {
             error(
-                "Không đọc được dữ liệu trang chia sẻ Douyin " +
-                    "(Douyin có thể đã đổi cấu trúc hoặc chặn yêu cầu)"
+                "Trang chia sẻ không có dữ liệu (độ dài ${html.length}). " +
+                    "Douyin có thể đã đổi cấu trúc hoặc chặn yêu cầu"
             )
         }
         val start = i + marker.length
@@ -92,12 +144,18 @@ object DouyinDownloader {
     private fun findItem(root: JSONObject): JSONObject {
         val loader = root.optJSONObject("loaderData") ?: error("Dữ liệu trang không hợp lệ")
         val keys = loader.keys()
+        val allKeys = mutableListOf<String>()
+        var diag = ""
         while (keys.hasNext()) {
-            val page = loader.optJSONObject(keys.next()) ?: continue
-            val list = page.optJSONObject("videoInfoRes")?.optJSONArray("item_list")
+            val k = keys.next()
+            allKeys.add(k)
+            val page = loader.optJSONObject(k) ?: continue
+            val res = page.optJSONObject("videoInfoRes") ?: continue
+            val list = res.optJSONArray("item_list")
             if (list != null && list.length() > 0) return list.getJSONObject(0)
+            diag += " [videoInfoRes: ${res.toString().take(250)}]"
         }
-        error("Không tìm thấy dữ liệu video (video có thể đã bị xóa hoặc ẩn)")
+        error("Không có dữ liệu video. loaderData=$allKeys$diag")
     }
 
     // ---------- Tải video / ảnh ----------
@@ -135,7 +193,7 @@ object DouyinDownloader {
 
     private fun downloadImages(
         ctx: Context,
-        images: org.json.JSONArray,
+        images: JSONArray,
         title: String,
         tmp: File,
         onProgress: (Float, String) -> Unit
@@ -162,8 +220,14 @@ object DouyinDownloader {
     }
 
     /** Tải 1 URL về file, trả về Content-Type. */
-    private fun fetchToFile(url: String, dest: File, onPercent: (Float) -> Unit): String {
-        val conn = connect(url, referer = "https://www.douyin.com/")
+    private fun fetchToFile(
+        url: String,
+        dest: File,
+        ua: String = MOBILE_UA,
+        cookie: String? = null,
+        onPercent: (Float) -> Unit
+    ): String {
+        val conn = connect(url, referer = "https://www.douyin.com/", ua = ua, cookie = cookie)
         val ct = conn.contentType ?: ""
         if (ct.startsWith("text/") || ct.contains("json")) {
             conn.disconnect()
@@ -200,7 +264,9 @@ object DouyinDownloader {
     private fun connect(
         url: String,
         referer: String? = null,
-        allowError: Boolean = false
+        allowError: Boolean = false,
+        ua: String = MOBILE_UA,
+        cookie: String? = null
     ): HttpURLConnection {
         var current = url
         for (hop in 0 until 10) {
@@ -208,10 +274,11 @@ object DouyinDownloader {
             conn.instanceFollowRedirects = false
             conn.connectTimeout = 20_000
             conn.readTimeout = 30_000
-            conn.setRequestProperty("User-Agent", MOBILE_UA)
+            conn.setRequestProperty("User-Agent", ua)
             conn.setRequestProperty("Accept", "*/*")
             conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
             if (referer != null) conn.setRequestProperty("Referer", referer)
+            if (cookie != null) conn.setRequestProperty("Cookie", cookie)
 
             val code = conn.responseCode
             if (code in 300..399) {
